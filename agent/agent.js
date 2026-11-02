@@ -5,38 +5,21 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawn, spawnSync } = require('child_process');
+const { spawn } = require('child_process');
+const { LIMIT, loadConfig, createApi, withRetry, clock, sleep, gitSnapshot, collectChanges, describeTool } = require('./common');
 
-const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
-const LIMIT = { diff: 400000, result: 100000, logLine: 2000 };
 const isWin = process.platform === 'win32';
 
 const configPath = path.resolve(process.argv[2] || path.join(__dirname, 'agent.config.json'));
-const cfg = loadConfig(configPath);
-const API = cfg.serverUrl.replace(/\/+$/, '') + '/api.jsp';
-const projectNames = Object.keys(cfg.projects).join(',');
-const decoder = new TextDecoder(cfg.fileEncoding || 'utf-8');
-
-function loadConfig(file) {
-  if (!fs.existsSync(file)) {
-    console.error(`설정 파일이 없습니다: ${file}\nagent.config.example.json 을 agent.config.json 으로 복사해서 수정하세요.`);
-    process.exit(1);
-  }
-  const c = JSON.parse(fs.readFileSync(file, 'utf8'));
-  for (const k of ['serverUrl', 'agentToken', 'agentName', 'projects']) {
-    if (!c[k]) throw new Error(`설정 누락: ${k} (${file})`);
-  }
-  for (const [name, dir] of Object.entries(c.projects)) c.projects[name] = path.resolve(path.dirname(file), dir);
-  c.pollIntervalSec = c.pollIntervalSec || 10;
-  c.claude = {
-    command: 'claude',
-    permissionMode: 'acceptEdits',
-    allowedTools: ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash(git status:*)', 'Bash(git diff:*)'],
-    timeoutMin: 30,
-    ...c.claude,
-  };
-  return c;
+let cfg;
+try {
+  cfg = loadConfig(configPath);
+} catch (e) {
+  console.error(e.message);
+  process.exit(1);
 }
+const api = createApi(cfg);
+const projectNames = Object.keys(cfg.projects).join(',');
 
 const run = { busy: false, child: null, shuttingDown: false };
 
@@ -50,41 +33,7 @@ function onSignal() {
 process.on('SIGINT', onSignal);
 process.on('SIGTERM', onSignal);
 
-const clock = () => new Date().toTimeString().slice(0, 8);
 const log = (msg) => console.log(`[${clock()}] ${msg}`);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function api(action, params = {}) {
-  const body = new URLSearchParams({ action });
-  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null) body.append(k, String(v));
-  const res = await fetch(API, {
-    method: 'POST',
-    headers: { 'X-Agent-Token': cfg.agentToken },
-    body,
-    signal: AbortSignal.timeout(30000),
-  });
-  const text = await res.text();
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(`HTTP ${res.status}, JSON 이 아닌 응답: ${text.slice(0, 200)}`);
-  }
-  if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
-}
-
-async function withRetry(fn, tries) {
-  for (let i = 1; ; i++) {
-    try {
-      return await fn();
-    } catch (e) {
-      if (i >= tries) throw e;
-      log(`재시도 ${i}/${tries - 1}: ${e.message}`);
-      await sleep(2000 * 2 ** (i - 1));
-    }
-  }
-}
 
 // ---------------- 진행 상황 전송 ----------------
 
@@ -132,49 +81,6 @@ class Reporter {
   }
 }
 
-// ---------------- git: 이번 작업의 변경분만 수집 ----------------
-
-function git(cwd, args, okCodes = [0]) {
-  const r = spawnSync('git', ['-c', 'core.quotepath=false', ...args], { cwd, maxBuffer: 200 * 1024 * 1024, windowsHide: true });
-  if (r.error) throw r.error;
-  if (!okCodes.includes(r.status)) throw new Error(`git ${args.join(' ')} 실패: ${r.stderr.toString().trim()}`);
-  return r.stdout;
-}
-
-function untracked(cwd) {
-  return git(cwd, ['ls-files', '--others', '--exclude-standard', '-z']).toString('utf8').split('\0').filter(Boolean);
-}
-
-// 작업 전 상태를 커밋 객체로 찍어 둔다(stash create 는 작업 트리를 건드리지 않음). 기존 미커밋 변경은 diff 에서 빠진다.
-function gitSnapshot(cwd) {
-  try {
-    if (git(cwd, ['rev-parse', '--is-inside-work-tree']).toString().trim() !== 'true') return null;
-  } catch {
-    return null;
-  }
-  let base;
-  try {
-    git(cwd, ['rev-parse', '--verify', 'HEAD']);
-    base = git(cwd, ['stash', 'create']).toString().trim() || 'HEAD';
-  } catch {
-    base = EMPTY_TREE;
-  }
-  return { base, untracked: new Set(untracked(cwd)) };
-}
-
-function collectChanges(cwd, snap) {
-  const diffs = [decoder.decode(git(cwd, ['diff', '--no-color', '--no-ext-diff', snap.base]))];
-  const files = [git(cwd, ['diff', '--name-status', snap.base]).toString('utf8').trim()];
-  for (const f of untracked(cwd)) {
-    if (snap.untracked.has(f)) continue;
-    diffs.push(decoder.decode(git(cwd, ['diff', '--no-color', '--no-index', '--', '/dev/null', f], [0, 1])));
-    files.push(`A\t${f}`);
-  }
-  let diff = diffs.filter(Boolean).join('\n');
-  if (diff.length > LIMIT.diff) diff = diff.slice(0, LIMIT.diff) + `\n\n... (diff 가 너무 커서 잘림, 전체 ${diff.length}자)`;
-  return { diff, files: files.filter(Boolean).join('\n') };
-}
-
 // ---------------- Claude Code 실행 ----------------
 
 const DEFAULT_INSTRUCTIONS = [
@@ -204,13 +110,6 @@ function killTree(child) {
     child.kill('SIGTERM');
     setTimeout(() => child.exitCode === null && child.kill('SIGKILL'), 5000).unref();
   }
-}
-
-function describeTool(block, cwd) {
-  const i = block.input || {};
-  let detail = i.file_path || i.notebook_path || i.path || i.command || i.pattern || i.url || i.description || '';
-  if (typeof detail === 'string' && path.isAbsolute(detail) && detail.startsWith(cwd)) detail = path.relative(cwd, detail);
-  return `${block.name} ${String(detail).replace(/\s+/g, ' ')}`.trim().slice(0, 300);
 }
 
 function runClaude(task, cwd, reporter, resumeId) {
@@ -259,7 +158,7 @@ function runClaude(task, cwd, reporter, resumeId) {
       } else if (ev.type === 'assistant') {
         for (const b of (ev.message && ev.message.content) || []) {
           if (b.type === 'text' && b.text.trim()) reporter.line(`[Claude] ${b.text.trim()}`);
-          else if (b.type === 'tool_use') reporter.line(`[도구] ${describeTool(b, cwd)}`);
+          else if (b.type === 'tool_use') reporter.line(`[도구] ${describeTool(b.name, b.input, cwd)}`);
         }
       } else if (ev.type === 'user') {
         const content = (ev.message && ev.message.content) || [];
@@ -304,7 +203,7 @@ function runClaude(task, cwd, reporter, resumeId) {
       onEvent(buf);
       if (resumeId && !gotInit && /No conversation found/i.test(stderr)) return finish({ resumeFailed: true });
       const denials = ((final && final.permission_denials) || [])
-        .map((d) => describeTool({ name: d.tool_name, input: d.tool_input }, cwd))
+        .map((d) => describeTool(d.tool_name, d.tool_input, cwd))
         .join('\n');
       let result = (final && final.result) || '';
       if (reporter.canceled) result = `[웹에서 취소 요청으로 중단됨]${result ? `\n\n${result}` : ''}`;
@@ -342,7 +241,7 @@ async function runTask(task) {
       reporter.line('[에이전트] 이전 세션을 이 PC에서 찾지 못해 이전 요청/결과를 붙여 새 세션으로 실행합니다');
       out = await runClaude(task, cwd, reporter, null);
     }
-    const changes = snap ? collectChanges(cwd, snap) : { diff: '', files: '' };
+    const changes = snap ? collectChanges(cwd, snap, cfg.fileEncoding) : { diff: '', files: '' };
     if (snap) reporter.line(`[에이전트] 변경 파일 ${changes.files ? changes.files.split('\n').length : 0}개`);
     outcome = {
       status: out.canceled ? 'canceled' : out.ok ? 'done' : 'error',
@@ -361,7 +260,7 @@ async function runTask(task) {
   }
   await reporter.stop();
   try {
-    await withRetry(() => api('complete', { id: task.id, ...outcome }), 6);
+    await withRetry(() => api('complete', { id: task.id, ...outcome }), 6, log);
     log(`#${task.id} 결과 전송 완료 (${outcome.status})`);
   } catch (e) {
     const backup = path.join(__dirname, `unsent-task-${task.id}.json`);
@@ -371,7 +270,7 @@ async function runTask(task) {
 }
 
 async function main() {
-  log(`에이전트 "${cfg.agentName}" 시작 → ${API}`);
+  log(`에이전트 "${cfg.agentName}" 시작 → ${api.url}`);
   for (const [name, dir] of Object.entries(cfg.projects)) log(`  프로젝트 ${name} = ${dir}`);
   let greeted = false;
   let wasDown = false;
