@@ -11,6 +11,7 @@
 //   $env:QUICK_TOKEN = "<게시 API 토큰>"
 //   $env:BRIDGE_UI_PASSWORD = "<웹 화면 로그인 비밀번호>"
 //   node deploy\deploy.js                     게시 (앱 이름 기본값 claude-bridge, --app 으로 변경)
+//   node deploy\deploy.js probe               quick DB 탐색 페이지 올리기 (앱 이름 bridge-probe)
 //   node deploy\deploy.js list                내 앱 목록
 //   node deploy\deploy.js delete --app <이름> --yes
 
@@ -30,7 +31,7 @@ const option = (name) => {
   const i = argv.indexOf(`--${name}`);
   return i >= 0 ? argv[i + 1] : undefined;
 };
-const app = option('app') || 'claude-bridge';
+const app = option('app') || (command === 'probe' ? 'bridge-probe' : 'claude-bridge');
 
 function fail(msg) {
   console.error(`\n[실패] ${msg}`);
@@ -213,15 +214,25 @@ async function deploy() {
   console.log(`  agent\\agent.config.json 의 serverUrl: "${finalFolder.replace(/\/$/, '')}"`);
 }
 
+// quick.js 의 DB 함수와 호출 경로를 화면에 보여 주는 탐색 페이지를 올린다
+async function probe() {
+  const page = { name: 'index.html', content: fs.readFileSync(path.join(ROOT, 'tools', 'quick-probe.html'), 'utf8') };
+  const folder = await uploadAndVerify([page]);
+  console.log(`탐색 페이지를 올렸습니다: ${folder}index.html`);
+  console.log('브라우저로 열어 [탐색 시작] 을 누르고, 결과 화면을 사진으로 보내 주세요.');
+  console.log(`다 보면 지우기: node deploy\\deploy.js delete --app ${app} --yes`);
+}
+
 async function main() {
   if (command === 'deploy') return deploy();
+  if (command === 'probe') return probe();
   if (command === 'list') return console.log(JSON.stringify(await call('GET', '/api/list'), null, 2));
   if (command === 'delete') {
     if (!option('app')) fail('지울 앱 이름을 --app 으로 지정하세요.');
     if (!argv.includes('--yes')) fail(`앱 '${app}' 을(를) 지우려면 --yes 를 붙이세요. 게시된 파일과 주소가 사라집니다.`);
     return console.log(JSON.stringify(await call('POST', '/api/delete', { json: { app_name: app } }), null, 2));
   }
-  fail(`알 수 없는 명령: ${command} (deploy | list | delete)`);
+  fail(`알 수 없는 명령: ${command} (deploy | probe | list | delete)`);
 }
 
 main().catch((e) => fail(e.cause ? `${e.message}: ${e.cause.message || e.cause}` : e.message));

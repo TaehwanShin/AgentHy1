@@ -39,7 +39,19 @@
 
 ## 1. 웹앱 올리기
 
-사내 웹앱 게시 API 로 올리는 스크립트 `deploy/deploy.js` 를 씁니다 (Node.js 18+, 설치할 패키지 없음).
+> **사내 게시 서버는 정적 HTML/CSS/JavaScript 만 지원합니다.** 그래서 `api.jsp` 백엔드는 그 서버에서 동작하지 않고,
+> 서버가 제공하는 DB 라이브러리(quick.js) 기반으로 바꾸는 중입니다. 먼저 아래 **탐색 페이지**로 그 라이브러리의 DB 함수를 확인합니다.
+>
+> ```powershell
+> $env:QUICK_BASE_URL = "<사내 가이드의 BASE_URL>"
+> $env:QUICK_TOKEN = "<게시 API 토큰>"
+> node deploy\deploy.js probe          # tools\quick-probe.html 을 앱 bridge-probe 로 올리고 주소 출력
+> ```
+>
+> 출력된 주소를 브라우저로 열어 **[탐색 시작]** 을 누르면 DB 함수 이름·동작·호출 경로가 표시됩니다 (헤더 값과 기록 내용은 표시하지 않음).
+> 테스트 기록 1건을 만들었다가 지우며, 다 본 뒤 `node deploy\deploy.js delete --app bridge-probe --yes` 로 지웁니다.
+
+JSP 를 실행하는 서버에 올릴 때는 `deploy/deploy.js` 를 씁니다 (Node.js 18+, 설치할 패키지 없음).
 저장소의 `api.jsp` 에는 기본값만 있고, **진짜 비밀번호와 토큰은 올리는 순간에만 넣습니다.**
 
 ```powershell
