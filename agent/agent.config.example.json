@@ -1,0 +1,19 @@
+{
+  "serverUrl": "http://intranet.example.co.kr/claude-bridge",
+  "agentToken": "change-me-agent",
+  "agentName": "taehwan-pc",
+  "pollIntervalSec": 10,
+  "fileEncoding": "utf-8",
+  "projects": {
+    "sample-web": "C:/work/sample-web",
+    "erp-batch": "C:/work/erp-batch"
+  },
+  "claude": {
+    "command": "claude",
+    "permissionMode": "acceptEdits",
+    "allowedTools": ["Read", "Edit", "Write", "Glob", "Grep", "Bash(git status:*)", "Bash(git diff:*)"],
+    "model": null,
+    "maxBudgetUsd": 2,
+    "timeoutMin": 30
+  }
+}
