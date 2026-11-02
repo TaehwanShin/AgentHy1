@@ -35,20 +35,34 @@
 | `agent/agent.js` | 헤드리스 방식: `claude -p` 를 직접 실행 (Orchestrator 를 쓰지 않을 때) |
 | `agent/common.js` | 두 방식이 함께 쓰는 설정 / 서버 API / git diff |
 | `agent/agent.config.example.json` | 설정 예시 |
+| `deploy/deploy.js` | 사내 웹앱 게시 API 로 `webapp/` 을 올리는 스크립트 |
 
 ## 1. 웹앱 올리기
 
-1. `webapp/api.jsp` 맨 위 설정을 바꿉니다.
-   ```java
-   static final String UI_PASSWORD = "change-me-ui";     // 웹 화면 로그인 비밀번호
-   static final String AGENT_TOKEN = "change-me-agent";  // PC 토큰 (길고 무작위로)
-   static final String DATA_DIR    = "";                 // 비우면 WEB-INF/bridge-data
-   ```
-2. `index.html`, `style.css`, `api.jsp` 세 파일을 같은 폴더에 올립니다. (예: `/claude-bridge/`)
-3. 브라우저에서 `http://<서버>/claude-bridge/index.html` 접속 → 이름 + 비밀번호로 로그인.
+사내 웹앱 게시 API 로 올리는 스크립트 `deploy/deploy.js` 를 씁니다 (Node.js 18+, 설치할 패키지 없음).
+저장소의 `api.jsp` 에는 기본값만 있고, **진짜 비밀번호와 토큰은 올리는 순간에만 넣습니다.**
 
-> 작업 데이터는 `WEB-INF/bridge-data/` 아래 `.properties` 파일로 저장됩니다 (URL 로 직접 열람 불가).
-> 웹앱을 재배포하면 이 폴더가 지워질 수 있으니, 유지하려면 `DATA_DIR` 에 배포 폴더 밖의 경로를 지정하세요.
+```powershell
+cd AgentHy1
+$env:QUICK_BASE_URL = "<사내 가이드의 BASE_URL>"
+$env:QUICK_TOKEN = "<게시 API 토큰>"
+$env:BRIDGE_UI_PASSWORD = "<웹 화면 로그인 비밀번호, 8자 이상>"
+# 에이전트 토큰은 agent\agent.config.json 의 agentToken 을 읽습니다 (없으면 $env:BRIDGE_AGENT_TOKEN)
+node deploy\deploy.js                 # 앱 이름 claude-bridge 로 게시 (--app <이름> 으로 변경)
+```
+
+에이전트 토큰은 16자 이상 무작위 값으로 만드세요: `node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"`
+
+스크립트는 두 단계로 올립니다.
+
+1. 버리는 임시 비밀번호로 올린 뒤, 서버가 `api.jsp` 를 **실제로 실행하는지** 확인합니다.
+   실행하지 않고 파일 내용을 그대로 보여 주는 서버라면 진짜 비밀번호가 노출되므로 **여기서 멈춥니다.**
+2. 진짜 비밀번호/토큰을 넣어 다시 올리고 로그인까지 확인한 뒤, 웹 주소와 `agent.config.json` 에 넣을 `serverUrl` 을 출력합니다.
+
+그 밖의 명령: `node deploy\deploy.js list` (내 앱 목록), `node deploy\deploy.js delete --app <이름> --yes` (삭제)
+
+> 작업 데이터는 `WEB-INF/bridge-data/` 아래 `.properties` 파일로 저장되고, 쓸 수 없으면 서버 임시 폴더를 씁니다.
+> 다시 올리면 지워질 수 있으니, 유지하려면 `api.jsp` 의 `DATA_DIR` 에 게시 폴더 밖의 경로를 지정하세요.
 
 ## 2. 내 PC: Orchestrator 세션 연결
 
@@ -145,6 +159,8 @@ Orchestrator 탭을 열어 두지 않고 백그라운드에서 처리하고 싶�
 
 | 증상 | 확인 |
 |---|---|
+| 게시 중 `api.jsp 를 실행하지 않고` 로 멈춤 | 게시 서버가 JSP 를 지원하지 않는 경우입니다. 이때는 백엔드를 다른 방식(예: 게시 서버의 DB 라이브러리)으로 바꿔야 합니다 |
+| 게시 중 `HTTP 401` | `QUICK_TOKEN` 확인 |
 | 웹에 Orchestrator 가 안 보임 | `node orchestrator-hook.js status` 의 `sessionId` 가 비어 있으면 세션 이름 확인(`/rename Orchestrator` 후 메시지 1회), `hook.log` 의 서버 오류 확인 |
 | 요청이 계속 "대기" | Orchestrator 가 다른 일을 하는 중이거나 승인 대기 중인지 확인. 23시간 넘게 쉬었다면 아무 메시지나 한 번 보내기 |
 | `에이전트 토큰이 맞지 않습니다` | `agentToken` 과 `AGENT_TOKEN` 일치 여부 |
