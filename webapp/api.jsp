@@ -279,6 +279,11 @@ String handle(String action, HttpServletRequest req, ServletContext app) throws 
         heartbeat(dir, agent, nz(req.getParameter("projects")), "");
         return "{\"ok\":true,\"orphaned\":" + orphaned + "}";
     }
+    if ("ping".equals(action)) {
+        String busy = req.getParameter("busy");
+        heartbeat(dir, agentName(req), nz(req.getParameter("projects")), busy == null ? null : nz(busy));
+        return "{\"ok\":true}";
+    }
     if ("claim".equals(action)) {
         String agent = agentName(req);
         Set<String> projects = csv(req.getParameter("projects"));

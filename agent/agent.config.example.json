@@ -5,8 +5,13 @@
   "pollIntervalSec": 10,
   "fileEncoding": "utf-8",
   "projects": {
-    "sample-web": "C:/work/sample-web",
-    "erp-batch": "C:/work/erp-batch"
+    "general": "C:/Workspaces",
+    "ZSD_ORDER": "C:/Workspaces/RAP_Project/ZSD_ORDER"
+  },
+  "orchestrator": {
+    "sessionName": "Orchestrator",
+    "pollIntervalSec": 5,
+    "maxWaitHours": 23
   },
   "claude": {
     "command": "claude",
