@@ -1,3 +1,4 @@
 agent.config.json
 unsent-task-*.json
 .orchestrator/
+.bridge-data/

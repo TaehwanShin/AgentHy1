@@ -13,8 +13,17 @@ function loadConfig(file) {
     throw new Error(`설정 파일이 없습니다: ${file}\nagent.config.example.json 을 agent.config.json 으로 복사해서 수정하세요.`);
   }
   const c = JSON.parse(fs.readFileSync(file, 'utf8'));
-  for (const k of ['serverUrl', 'agentToken', 'agentName', 'projects']) {
+  // static 이 있으면 정적 호스팅(게시 API) 방식, 없으면 api.jsp 서버 방식
+  for (const k of c.static ? ['agentName', 'projects'] : ['serverUrl', 'agentToken', 'agentName', 'projects']) {
     if (!c[k]) throw new Error(`설정 누락: ${k} (${file})`);
+  }
+  if (c.static) {
+    c.static = { publishDiff: true, ...c.static, token: c.static.token || process.env.QUICK_TOKEN };
+    for (const k of ['apiBase', 'appName', 'appUrl', 'token']) {
+      if (!c.static[k]) throw new Error(`설정 누락: static.${k} (${file})${k === 'token' ? ' — 또는 환경 변수 QUICK_TOKEN' : ''}`);
+    }
+    c.static.apiBase = c.static.apiBase.replace(/\/+$/, '');
+    c.static.appUrl = c.static.appUrl.replace(/\/*$/, '/');
   }
   for (const [name, dir] of Object.entries(c.projects)) c.projects[name] = path.resolve(path.dirname(file), dir);
   c.pollIntervalSec = c.pollIntervalSec || 10;
@@ -33,6 +42,7 @@ const clock = () => new Date().toTimeString().slice(0, 8);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function createApi(cfg) {
+  if (cfg.static) return require('./static-backend').createStaticApi(cfg);
   const url = cfg.serverUrl.replace(/\/+$/, '') + '/api.jsp';
   const api = async (action, params = {}, timeoutMs = 30000) => {
     const body = new URLSearchParams({ action });

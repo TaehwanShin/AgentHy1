@@ -1,12 +1,16 @@
 {
-  "serverUrl": "http://intranet.example.co.kr/claude-bridge",
-  "agentToken": "change-me-agent",
   "agentName": "taehwan-pc",
-  "pollIntervalSec": 10,
   "fileEncoding": "utf-8",
   "projects": {
     "general": "C:/Workspaces",
     "ZSD_ORDER": "C:/Workspaces/RAP_Project/ZSD_ORDER"
+  },
+  "static": {
+    "apiBase": "<deploy.js 가 출력한 apiBase>",
+    "appName": "claude-bridge",
+    "appUrl": "<deploy.js 가 출력한 appUrl>",
+    "token": "<게시 API 토큰>",
+    "publishDiff": true
   },
   "orchestrator": {
     "sessionName": "Orchestrator",

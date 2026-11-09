@@ -1,182 +1,148 @@
 # AgentHy1 — Claude 작업 브릿지 (프로토타입)
 
-사내 웹앱에 **프로그램 수정 요청**을 올리면, 내 PC의 **RAP Builder → General 탭의 `Orchestrator` Claude Code 세션**이
-요청을 받아 수정하고, **답변 + 변경 diff + 진행 로그**를 다시 웹앱으로 돌려주는 구조입니다.
+사내 **정적 호스팅**에 올린 대시보드 웹앱에서 **프로그램 수정 요청**을 올리면,
+내 PC 의 **RAP Builder → General 탭 `Orchestrator` Claude Code 세션**이 처리하고,
+**답변 · 변경 diff · 진행 로그**를 다시 웹앱으로 게시하는 구조입니다.
 
 ```
- ┌──────────────── 사내 웹 서버 (JSP) ────────────────┐
- │  index.html + style.css   ←  요청자 브라우저        │
- │  api.jsp  (작업 큐, WEB-INF/bridge-data 에 저장)    │
- └───────────────▲──────────────────────┬─────────────┘
-                 │ ① 5초마다 "새 작업 있어?"   │ ② 작업 전달
-                 │ ④ 진행 로그 / 답변·diff 전송  ▼
- ┌──────────────── 내 PC: RAP Builder → General 탭 ───────────────┐
- │  Claude Code 세션 "Orchestrator"  (C:\Workspaces 에서 실행)     │
- │   └─ 훅 orchestrator-hook.js                                    │
- │       ③ 요청이 오면 쉬고 있던 세션을 깨워 "[웹 브릿지 요청 #N]" 전달 │
- │       ④ 턴이 끝나면 마지막 답변과 git diff 를 서버로 전송          │
- └─────────────────────────────────────────────────────────────────┘
+ ┌──────── 사내 정적 호스팅 (서버 로직 없음) ────────┐
+ │ index.html + app/  ← 대시보드 (브라우저에서 동작)     │
+ │ app/data/inbox.json      브라우저가 올린 요청         │
+ │ app/data/tasks.json      PC 가 올린 작업 현황         │
+ │ app/data/tasks/<번호>.json  작업 상세(답변·diff·로그) │
+ └──────▲──────────────────────────┬──────────────────┘
+        │ ③ 게시 API 로 결과 업로드     │ ① 요청을 게시 API 로 업로드 (브라우저)
+        │                              │ ② 5초마다 inbox.json 확인 (PC)
+ ┌──────┴──────── 내 PC: RAP Builder → General 탭 ─────────────────┐
+ │ Claude Code 세션 "Orchestrator" + 훅 orchestrator-hook.js         │
+ │  요청이 오면 쉬고 있던 세션을 깨워 처리 → 턴이 끝나면 결과 게시      │
+ └──────────────────────────────────────────────────────────────────┘
 ```
 
-- **요청이 Orchestrator 대화에 그대로 들어옵니다.** RAP Builder 화면에서 Claude 가 일하는 과정을 직접 보고, 필요하면 끼어들 수 있습니다.
-- **PC → 서버 방향으로만 접속**합니다. PC에 포트를 열 필요가 없습니다.
-- Claude Code 의 **훅(hooks)만 사용**합니다. RAP Builder 코드는 바꾸지 않았고, claude.ai 로그인이 필요한 기능(channels)도 쓰지 않아
-  **사내 LLM(폐쇄망) 환경에서도 동작**합니다.
-- 웹앱 파일은 `html / jsp / css` 3개, 합계 약 60KB 입니다. JSP 는 외부 라이브러리 없이 Java 6 문법으로 작성했습니다.
+- 서버 로직 · DB 없이 **정적 파일만** 씁니다. 데이터는 JSON 파일을 다시 올리는 방식으로 갱신합니다.
+- **PC → 서버 방향으로만 접속**합니다. PC 에 포트를 열 필요가 없습니다.
+- 외부 라이브러리 · CDN · 빌드 도구 없음 (vanilla JS + ES Modules, 차트는 인라인 SVG). 전체 약 70KB.
+- Claude Code 의 **훅(hooks)만 사용**하므로 RAP Builder 코드를 바꾸지 않고, 사내 LLM(폐쇄망) 환경에서도 동작합니다.
 
 ## 구성
 
 | 경로 | 설명 |
 |---|---|
-| `webapp/index.html` | 요청 등록, 작업 목록, 진행 로그, 결과/diff 화면 (JS 포함) |
-| `webapp/style.css` | 화면 스타일 (라이트/다크) |
-| `webapp/api.jsp` | 작업 큐 API. 상단에 비밀번호/토큰 설정 |
-| `agent/orchestrator-hook.js` | **Orchestrator 세션 연결 훅** (기본 방식) |
-| `agent/agent.js` | 헤드리스 방식: `claude -p` 를 직접 실행 (Orchestrator 를 쓰지 않을 때) |
-| `agent/common.js` | 두 방식이 함께 쓰는 설정 / 서버 API / git diff |
-| `agent/agent.config.example.json` | 설정 예시 |
-| `deploy/deploy.js` | 사내 웹앱 게시 API 로 `webapp/` 을 올리는 스크립트 |
+| `webapp/index.html` | 진입점 · 레이아웃 |
+| `webapp/app/styles/main.css` | 화이트/블루 테마, 1920 · 1366px 대응 (최소 1024px) |
+| `webapp/app/js/main.js` | 초기화 · 해시 라우팅 · 주기적 갱신 · 토큰 입력 |
+| `webapp/app/js/data-loader.js` | JSON 읽기, 요청을 inbox.json 에 업로드 |
+| `webapp/app/js/components/` | KPI 카드, SVG 막대 차트, 표 + CSV, 마크다운/diff |
+| `webapp/app/js/views/` | 개요 · 작업 목록 · 작업 상세 · 새 요청 화면 |
+| `deploy/deploy.js` | 게시 API 로 `webapp/` 을 올리는 스크립트 |
+| `agent/orchestrator-hook.js` | Orchestrator 세션 연결 훅 |
+| `agent/static-backend.js` | 정적 호스팅용 작업 저장소 (inbox 읽기 · 결과 게시) |
+| `agent/agent.js` | 헤드리스 방식 (`claude -p` 직접 실행, Orchestrator 대신 쓸 때) |
+| `agent/common.js` | 설정 · 서버 API · git diff 공용 |
+| `webapp-jsp/` | JSP 를 실행하는 서버용 이전 버전 (참고) |
 
-## 1. 웹앱 올리기
+## 화면 (해시 라우팅)
 
-> **사내 게시 서버는 정적 HTML/CSS/JavaScript 만 지원합니다.** 그래서 `api.jsp` 백엔드는 그 서버에서 동작하지 않고,
-> 서버가 제공하는 DB 라이브러리(quick.js) 기반으로 바꾸는 중입니다. 먼저 아래 **탐색 페이지**로 그 라이브러리의 DB 함수를 확인합니다.
->
-> ```powershell
-> $env:QUICK_BASE_URL = "<사내 가이드의 BASE_URL>"
-> $env:QUICK_TOKEN = "<게시 API 토큰>"
-> node deploy\deploy.js probe          # tools\quick-probe.html 을 앱 bridge-probe 로 올리고 주소 출력
-> ```
->
-> 출력된 주소를 브라우저로 열어 **[탐색 시작]** 을 누르면 DB 함수 이름·동작·호출 경로가 표시됩니다 (헤더 값과 기록 내용은 표시하지 않음).
-> 테스트 기록 1건을 만들었다가 지우며, 다 본 뒤 `node deploy\deploy.js delete --app bridge-probe --yes` 로 지웁니다.
+| 주소 | 내용 |
+|---|---|
+| `#/overview` | KPI 6개 (전체 · 오늘 · 진행 중 · 완료 · 실패/취소 · 평균 처리 시간), 최근 14일 요청 차트, PC 상태, 최근 작업 |
+| `#/detail` | 필터(상태 · 프로젝트 · 요청자 · 등록 기간 · 제목 검색) + 작업 표 + **CSV 내보내기**. 필터는 URL 해시와 localStorage 에 저장되어 다음에 열 때 복원 |
+| `#/task/<번호>` | 요청 · Claude 답변 · 변경 파일 · diff · 실행 로그, 취소 / 다시 실행 / 추가 지시 / .patch 받기 |
+| `#/new` | 새 요청 등록 |
 
-JSP 를 실행하는 서버에 올릴 때는 `deploy/deploy.js` 를 씁니다 (Node.js 18+, 설치할 패키지 없음).
-저장소의 `api.jsp` 에는 기본값만 있고, **진짜 비밀번호와 토큰은 올리는 순간에만 넣습니다.**
+## 1. 웹앱 올리기 (사내 PC, PowerShell)
 
 ```powershell
 cd AgentHy1
-$env:QUICK_BASE_URL = "<사내 가이드의 BASE_URL>"
-$env:QUICK_TOKEN = "<게시 API 토큰>"
-$env:BRIDGE_UI_PASSWORD = "<웹 화면 로그인 비밀번호, 8자 이상>"
-# 에이전트 토큰은 agent\agent.config.json 의 agentToken 을 읽습니다 (없으면 $env:BRIDGE_AGENT_TOKEN)
-node deploy\deploy.js                 # 앱 이름 claude-bridge 로 게시 (--app <이름> 으로 변경)
+$env:QUICK_API_BASE = "<가이드의 BASE_URL>"     # 업로드 API 주소
+$env:QUICK_HOST     = "<가이드의 HOST>"         # 게시된 앱이 열리는 주소
+$env:QUICK_TOKEN    = "<게시 API 토큰>"
+node deploy\deploy.js                          # 앱 이름 claude-bridge (--app <이름> 으로 변경)
 ```
 
-에이전트 토큰은 16자 이상 무작위 값으로 만드세요: `node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"`
+- `index.html` 로 앱을 만든 뒤 `app/` 아래 파일을 상대 경로 그대로 올리고, 게시 주소에서 모든 파일이 보이는지 확인합니다.
+- `app/data/config.json` 에 업로드 API 주소와 앱 이름만 씁니다 (토큰은 넣지 않음).
+- 작업 데이터(`tasks.json`, `inbox.json`)는 처음에만 만들고, 다시 올릴 때는 건드리지 않습니다.
+- 끝나면 웹 주소와 `agent.config.json` 에 넣을 `static` 값을 출력합니다.
+- 그 밖의 명령: `node deploy\deploy.js list`, `node deploy\deploy.js delete --app <이름> --yes`
 
-스크립트는 두 단계로 올립니다.
+## 2. 내 PC: Orchestrator 연결
 
-1. 버리는 임시 비밀번호로 올린 뒤, 서버가 `api.jsp` 를 **실제로 실행하는지** 확인합니다.
-   실행하지 않고 파일 내용을 그대로 보여 주는 서버라면 진짜 비밀번호가 노출되므로 **여기서 멈춥니다.**
-2. 진짜 비밀번호/토큰을 넣어 다시 올리고 로그인까지 확인한 뒤, 웹 주소와 `agent.config.json` 에 넣을 `serverUrl` 을 출력합니다.
+준비물: **Node.js 18 이상**, **RAP Builder** 와 Claude Code (테스트한 버전 2.1.316), 프로젝트는 **git 저장소** 권장.
 
-그 밖의 명령: `node deploy\deploy.js list` (내 앱 목록), `node deploy\deploy.js delete --app <이름> --yes` (삭제)
-
-> 작업 데이터는 `WEB-INF/bridge-data/` 아래 `.properties` 파일로 저장되고, 쓸 수 없으면 서버 임시 폴더를 씁니다.
-> 다시 올리면 지워질 수 있으니, 유지하려면 `api.jsp` 의 `DATA_DIR` 에 게시 폴더 밖의 경로를 지정하세요.
-
-## 2. 내 PC: Orchestrator 세션 연결
-
-준비물: **Node.js 18 이상**(`node` 가 PATH 에 있어야 함), **RAP Builder** 와 Claude Code(테스트한 버전 2.1.316), 프로젝트는 **git 저장소** 권장.
-
-**① 설정 파일 만들기**
-
-```powershell
-cd agent
-copy agent.config.example.json agent.config.json
-# agent.config.json 수정
-```
+**① 설정** — `agent\agent.config.example.json` 을 `agent\agent.config.json` 으로 복사하고 수정합니다.
 
 ```jsonc
 {
-  "serverUrl": "http://intranet.example.co.kr/claude-bridge", // index.html 이 있는 폴더 URL
-  "agentToken": "change-me-agent",          // api.jsp 의 AGENT_TOKEN 과 동일
-  "agentName": "taehwan-pc",                // 헤드리스 방식에서 웹에 표시될 이름
+  "agentName": "taehwan-pc",
   "fileEncoding": "utf-8",                  // 소스가 EUC-KR 이면 "euc-kr" (diff 표시용)
   "projects": {                             // 웹에서 고르는 프로젝트 이름 → 작업 폴더 (diff 수집 기준)
     "general": "C:/Workspaces",
     "ZSD_ORDER": "C:/Workspaces/RAP_Project/ZSD_ORDER"
   },
-  "orchestrator": {
-    "sessionName": "Orchestrator",          // 연결할 Claude 세션 이름 (웹에도 이 이름으로 표시)
-    "pollIntervalSec": 5,                   // 쉬는 동안 서버 확인 간격
-    "maxWaitHours": 23                      // 이 시간 동안 아무 일이 없으면 대기를 쉼 (아무 입력이나 하면 재개)
-  }
+  "static": {                               // deploy.js 가 출력한 값
+    "apiBase": "...", "appName": "claude-bridge", "appUrl": "...",
+    "token": "<게시 API 토큰>",              // 또는 환경 변수 QUICK_TOKEN
+    "publishDiff": true                     // false 면 diff 는 게시하지 않고 PC 에만 남김
+  },
+  "orchestrator": { "sessionName": "Orchestrator", "pollIntervalSec": 5, "maxWaitHours": 23 }
 }
 ```
 
 **② 훅 설치** — RAP Builder 의 Claude 는 모두 `C:\Workspaces` 에서 시작하므로 그 폴더의 로컬 설정에 넣습니다.
 
 ```powershell
-node orchestrator-hook.js install C:\Workspaces\.claude\settings.local.json
+node agent\orchestrator-hook.js install C:\Workspaces\.claude\settings.local.json
 ```
 
-기존 `settings.local.json` 내용(권한 설정 등)은 그대로 두고 훅만 추가합니다(이전 파일은 `.bak` 로 보관).
-다시 실행해도 중복되지 않으며, 제거는 `node orchestrator-hook.js uninstall <같은 경로>` 입니다.
+기존 설정(RAP-Kit 훅, 권한 등)은 그대로 두고 훅만 추가합니다. 제거는 `uninstall <같은 경로>`.
 
 **③ RAP Builder 에서 Orchestrator 세션 열기**
 
-1. Workspaces 에서 **General** 을 선택 → 새 **Claude** 탭
-2. Claude 입력창에 `/rename Orchestrator`
-3. 아무 메시지나 한 번 보냅니다 (예: `웹 브릿지 요청 대기`). 이 턴이 끝나면 연결되고 웹 요청을 기다립니다.
-4. 웹 화면 상단에 `● Orchestrator 대기 중` 이 보이면 완료입니다.
+1. Workspaces 에서 **General** 선택 → 새 **Claude** 탭 → `/rename Orchestrator`
+2. 아무 메시지나 한 번 보냅니다 (예: `웹 브릿지 요청 대기`). 이 턴이 끝나면 연결됩니다.
+3. 웹 화면 오른쪽 위에 `● Orchestrator 대기 중` 이 보이면 완료입니다. 다음부터는 **Resume** 에서 `Orchestrator` 를 고르면 됩니다.
 
-다음부터는 RAP Builder 의 **Resume** 에서 `Orchestrator` 를 선택하면 바로 연결됩니다.
-이름이 다른 세션(프로그램 탭 등)에는 훅이 아무 일도 하지 않습니다.
-
-> **권한 모드:** 웹 요청을 처리하다 파일 수정 승인을 기다리면, 웹 로그에 `[알림] ... permission` 이 뜨고 PC 에서 승인할 때까지 멈춥니다.
-> 자리를 비울 때는 Orchestrator 탭에서 `Shift+Tab` 으로 **accept edits** 모드를 켜 두는 것을 권장합니다.
+> 자리를 비울 때는 Orchestrator 탭에서 `Shift+Tab` 으로 **accept edits** 를 켜 두세요. 승인 대기 중이면 웹 로그에 `[알림]` 이 뜨고 PC 에서 승인할 때까지 멈춥니다.
 
 ## 3. 사용 흐름
 
-1. 웹에서 **프로젝트 선택 → 요청 내용 입력 → 요청 등록**
-2. 몇 초 안에 Orchestrator 탭에 `[웹 브릿지 요청 #N] 제목` 이 들어오고 Claude 가 바로 작업을 시작합니다.
-   웹에는 Claude 가 쓰는 도구(파일 읽기/수정 등)가 **실시간 로그**로 표시됩니다.
-3. 그 턴이 끝나면 **Claude 의 마지막 답변, 변경 파일 목록, diff** 가 웹에 표시되고 `.patch` 로 내려받을 수 있습니다.
-4. 결과를 보고 **추가 지시**를 쓰면 같은 Orchestrator 대화로 이어서 들어갑니다.
-5. 실행 중 **취소**하면 Claude 의 다음 도구 실행이 막히고 "작업이 취소되었습니다" 로 끝납니다.
+1. 웹에서 **새 요청** → 처음 한 번 **요청자 이름과 게시 API 토큰** 입력 → 요청이 `inbox.json` 에 올라가고 `접수 대기` 로 표시됩니다.
+2. 몇 초 안에 PC 가 가져가 번호를 붙이고(`대기` → `실행 중`), Orchestrator 탭에 `[웹 브릿지 요청 #N]` 이 들어와 Claude 가 작업합니다.
+3. 턴이 끝나면 답변 · 변경 파일 · diff 가 게시되어 작업 상세에 표시됩니다 (웹은 5~15초마다 갱신).
+4. **추가 지시**는 같은 Orchestrator 대화로 이어지고, **취소**하면 Claude 의 다음 도구 실행이 막혀 `취소됨` 으로 끝납니다.
 
-Claude 는 **커밋/푸시를 하지 않습니다.** 변경은 PC 작업 폴더에 남아 있으니 검토 후 직접 커밋하세요.
-diff 는 요청을 받은 시점의 스냅샷과 비교하므로, 원래 있던 미커밋 변경은 결과 diff 에 섞이지 않습니다.
-
-상태 확인: `node orchestrator-hook.js status` (연결된 세션, 진행 중인 작업, 대기 프로세스) · 로그: `agent\.orchestrator\hook.log`
-
-## 다른 방식: 헤드리스 에이전트 (`agent.js`)
-
-Orchestrator 탭을 열어 두지 않고 백그라운드에서 처리하고 싶을 때는 `node agent.js` 를 실행합니다.
-작업마다 `claude -p` 를 새로 실행하며, 설정의 `claude` 항목(허용 도구, 권한 모드, 비용 상한, 제한 시간)을 따릅니다.
-**두 방식을 같은 프로젝트에 동시에 켜지 마세요** — 먼저 가져가는 쪽이 작업을 처리합니다.
+Claude 는 커밋/푸시를 하지 않습니다. 변경은 PC 작업 폴더에 남으니 검토 후 직접 커밋하세요.
 
 ## 보안 — 꼭 읽어 주세요
 
-이 웹앱은 **"내 PC의 Claude 에게 코드 수정을 지시하는 창구"** 입니다.
-
-- `UI_PASSWORD`, `AGENT_TOKEN` 은 반드시 바꾸고, 토큰은 길고 무작위로 만드세요.
-- 웹 요청은 Orchestrator 세션의 **권한 설정 그대로** 실행됩니다. 세션에서 Bash 전체 허용 등 넓은 권한을 주면 웹 요청도 그 권한을 갖습니다.
-- 다른 사내 페이지에서 몰래 요청을 보내는 CSRF 는 전용 헤더 검사로 막았지만, 로그인 시도 제한은 없습니다.
-  가능하면 사내 SSO/접근 제어 뒤에 두세요.
-- 요청 내용과 소스 일부가 Claude 가 연결된 LLM 으로 전송됩니다. 사내 보안 정책을 확인하세요.
+- **토큰은 브라우저에 저장하지 않습니다.** 사내 정적 호스팅의 앱들은 같은 주소(origin)를 쓰므로 localStorage 에 넣으면 다른 앱이 읽을 수 있습니다.
+  그래서 페이지 메모리에만 두고, 새로고침하면 다시 입력합니다.
+- **요청은 게시 API 토큰을 가진 사람만** 올릴 수 있습니다. 웹 요청은 Orchestrator 세션의 권한 그대로 실행됩니다.
+- **게시된 JSON 은 주소를 아는 사람 누구나 읽을 수 있습니다.** 요청 내용 · 답변 · diff(소스 일부)가 포함되니,
+  민감한 프로젝트는 `"publishDiff": false` 로 diff 를 PC 에만 남기세요.
+- 저장소(AgentHy1)는 공개 저장소이므로 사내 주소 · 토큰은 코드에 넣지 않고 환경 변수 / 로컬 설정으로만 받습니다.
 
 ## 제한 사항 (프로토타입)
 
-- Orchestrator 탭에 직접 입력하는 중에 웹 요청이 처리되면, 그 턴의 마지막 답변이 웹으로 갑니다. 웹 요청은 쉬고 있을 때만 가져갑니다.
-- 훅은 `C:\Workspaces` 에서 시작한 모든 Claude 세션에서 도구 실행마다 잠깐(node 실행) 돌지만, Orchestrator 가 아니면 즉시 끝납니다.
-- `/clear` 하면 새 세션이 되어 연결이 끊길 수 있습니다. 다시 `/rename Orchestrator` 후 메시지를 한 번 보내세요.
-- Orchestrator 방식에서는 비용/턴 수가 웹에 표시되지 않습니다.
-- 서버 POST 크기 제한(Tomcat 기본 2MB) 때문에 diff 는 40만 자, 결과는 10만 자에서 잘립니다.
-- 저장소가 파일 기반이라 작업 수백 건 수준까지를 가정합니다. (목록은 최근 200건) IE 는 지원하지 않습니다.
+- **브라우저에서 업로드 API 를 호출할 수 있어야(CORS 허용)** 웹에서 요청을 올릴 수 있습니다.
+  막혀 있으면 "업로드 API 에 연결하지 못했습니다" 가 표시되며, 이때는 대시보드를 보기 전용으로 쓰고 요청은 Orchestrator 탭에 직접 입력하세요.
+- 작업 기록의 원본은 PC 의 `agent\.bridge-data\` 입니다. **앱 하나에 PC 한 대만** 연결하고, 이 폴더는 지우지 마세요(지우면 번호가 1부터 다시 시작).
+- 요청을 동시에 여러 탭에서 올리면 드물게 하나가 빠질 수 있습니다 (`inbox.json` 을 통째로 다시 쓰는 방식).
+- Orchestrator 탭에 직접 입력하는 턴과 웹 요청이 겹치면 그 턴의 답변이 웹으로 갑니다. 웹 요청은 쉬고 있을 때만 가져갑니다.
+- 게시 API 호출 수를 줄이려고 진행 로그는 5초, PC 상태는 1분 간격으로 올립니다.
+
+## 다른 방식
+
+- **헤드리스 (`node agent\agent.js`)**: Orchestrator 탭 없이 작업마다 `claude -p` 를 실행합니다. 같은 `static` 설정을 씁니다. Orchestrator 와 동시에 켜지 마세요.
+- **JSP 서버 (`webapp-jsp/`)**: JSP 를 실행하는 서버가 있으면 `api.jsp` 백엔드를 쓸 수 있습니다. 이때 설정은 `static` 대신 `serverUrl`, `agentToken` 을 씁니다.
 
 ## 문제 해결
 
 | 증상 | 확인 |
 |---|---|
-| 게시 중 `api.jsp 를 실행하지 않고` 로 멈춤 | 게시 서버가 JSP 를 지원하지 않는 경우입니다. 이때는 백엔드를 다른 방식(예: 게시 서버의 DB 라이브러리)으로 바꿔야 합니다 |
-| 게시 중 `HTTP 401` | `QUICK_TOKEN` 확인 |
-| 웹에 Orchestrator 가 안 보임 | `node orchestrator-hook.js status` 의 `sessionId` 가 비어 있으면 세션 이름 확인(`/rename Orchestrator` 후 메시지 1회), `hook.log` 의 서버 오류 확인 |
-| 요청이 계속 "대기" | Orchestrator 가 다른 일을 하는 중이거나 승인 대기 중인지 확인. 23시간 넘게 쉬었다면 아무 메시지나 한 번 보내기 |
-| `에이전트 토큰이 맞지 않습니다` | `agentToken` 과 `AGENT_TOKEN` 일치 여부 |
-| `JSON 이 아닌 응답` | `serverUrl` 이 `api.jsp` 가 있는 폴더를 가리키는지, 사내 SSO 로그인 페이지로 리다이렉트되는지 |
-| 사내 HTTPS 인증서 오류 | 시스템 환경 변수 `NODE_EXTRA_CA_CERTS=C:\path\company-ca.pem` 설정 후 RAP Builder 재시작 |
+| 배포 중 `하위 폴더` / `Content-Type` 경고 | 게시 서버가 `app/` 하위 폴더나 `.js` 의 JavaScript 형식을 지원하지 않는 경우입니다. 출력 내용을 알려 주세요 |
+| 배포 중 `HTTP 401` | `QUICK_TOKEN` 확인 |
+| 웹에 Orchestrator 가 안 보임 | `node agent\orchestrator-hook.js status` 의 `sessionId` 확인, `agent\.orchestrator\hook.log` 의 게시 API 오류 확인 |
+| 요청이 계속 `접수 대기` | PC 가 꺼져 있거나 Orchestrator 가 다른 일 / 승인 대기 중. 23시간 넘게 쉬었다면 Orchestrator 에 아무 메시지나 한 번 보내기 |
 | 한글 diff 가 깨짐 | 소스 인코딩이 EUC-KR 이면 `"fileEncoding": "euc-kr"` |
-| 작업이 계속 "실행 중" | Orchestrator 세션을 다시 시작(Resume)하면 중단된 작업은 실패로 정리됨 → "다시 실행" |
